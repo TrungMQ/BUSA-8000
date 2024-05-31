@@ -1,0 +1,173 @@
+```{r}
+# Load necessary libraries
+packages <- c("readr", "dplyr", "ggplot2", "lubridate", "randomForest", "caret", "xgboost", "tidyr", "forecast")
+
+install_if_missing <- function(p) {
+  if (!require(p, character.only = TRUE)) {
+    install.packages(p, dependencies = TRUE)
+  }
+  library(p, character.only = TRUE)
+}
+
+lapply(packages, install_if_missing)
+
+# Load the dataset
+data <- read_csv('sales_clean(draft).csv')
+
+# Ensure column names are valid by removing spaces
+names(data) <- make.names(names(data))
+
+# Create a new column 'TotalSales' as Quantity Ordered * Price Each
+data$TotalSales <- data$Quantity.Ordered * data$Price.Each
+
+# Drop irrelevant columns for model training
+data <- data %>% select(-c(Order.ID, Order.Date, Purchase.Address))
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Split the data into training (70%) and testing (30%) sets
+trainIndex <- createDataPartition(data$TotalSales, p = .7, list = FALSE, times = 1)
+trainData <- data[trainIndex,]
+testData <- data[-trainIndex,]
+
+cat("Data preprocessing and split complete.\n")
+
+# Train a Random Forest model with limited number of trees
+cat("Training Random Forest model...\n")
+rf_model <- randomForest(TotalSales ~ ., data = trainData, ntree = 10)
+cat("Random Forest model trained.\n")
+
+# Train a Linear Regression model
+cat("Training Linear Regression model...\n")
+lm_model <- lm(TotalSales ~ ., data = trainData)
+cat("Linear Regression model trained.\n")
+
+# Predict using the Random Forest model
+cat("Making predictions with Random Forest model...\n")
+rf_predictions <- predict(rf_model, testData)
+
+# Predict using the Linear Regression model
+cat("Making predictions with Linear Regression model...\n")
+lm_predictions <- predict(lm_model, testData)
+
+# Evaluate the models
+rf_rmse <- sqrt(mean((rf_predictions - testData$TotalSales)^2))
+lm_rmse <- sqrt(mean((lm_predictions - testData$TotalSales)^2))
+
+cat("Random Forest RMSE:", rf_rmse, "\n")
+cat("Linear Regression RMSE:", lm_rmse, "\n")
+
+# Plot the results
+plot_results <- function(predictions, true_values, model_name) {
+  results <- data.frame(Predicted = predictions, Actual = true_values)
+  ggplot(results, aes(x = Actual, y = Predicted)) +
+    geom_point(alpha = 0.5) +
+    geom_abline(slope = 1, intercept = 0, color = 'red') +
+    ggtitle(paste(model_name, "Predictions vs Actual")) +
+    xlab("Actual Total Sales") +
+    ylab("Predicted Total Sales")
+}
+
+# Visualize the results for both models
+rf_plot <- plot_results(rf_predictions, testData$TotalSales, "Random Forest")
+lm_plot <- plot_results(lm_predictions, testData$TotalSales, "Linear Regression")
+
+print(rf_plot)
+print(lm_plot)
+
+# Based on the RMSE values, recommend the model with the lower RMSE
+if (rf_rmse < lm_rmse) {
+  cat("Recommend Random Forest model\n")
+} else {
+  cat("Recommend Linear Regression model\n")
+}
+```
+```{r}
+data <- read_csv('sales_clean(draft).csv')
+library("forecast") 
+# Convert 'Order.Date' to Date format
+
+names(data) <- make.names(names(data))
+
+# Convert Order Date to Date format
+data$Order.Date <- as.POSIXct(data$Order.Date, format="%Y-%m-%d %H:%M:%S")
+
+# Remove rows where Order.Date year is NA or 2020
+data <- data[!is.na(year(data$Order.Date)) & year(data$Order.Date) != 2020, ]
+data$Total.Sales <- data$Quantity.Ordered * data$Price.Each
+
+# Add a new column with just the date part of Order.Date
+data <- data %>%
+  mutate(Order.Date.NoTime = as.Date(Order.Date))
+
+# Now group by the new column to get daily sales
+daily_sales <- data %>%
+  group_by(Order.Date.NoTime) %>%
+  summarise(Total.Sales = sum(Total.Sales))
+
+# Removing first row
+daily_sales <- daily_sales[-1, ]
+
+ggplot(data = daily_sales, aes(x = Order.Date.NoTime, y = Total.Sales)) +
+  geom_line() +
+  labs(x = "Date", y = "Total Sales", 
+       title = "Daily Sales Over Time") +
+  theme_minimal()
+
+# Creating weekly sales
+weekly_sales <- daily_sales %>%
+  mutate(Week = floor_date(Order.Date.NoTime, "week")) %>%
+  group_by(Week) %>%
+  summarise(Total.Sales = sum(Total.Sales))
+# Removing first row
+weekly_sales <- weekly_sales[-1, ]
+
+ggplot(data = weekly_sales, aes(x = Week, y = Total.Sales)) +
+  geom_line() +
+  labs(x = "Week", y = "Total Sales", 
+       title = "Weekly Sales Over Time") +
+  theme_minimal()
+# Define start date components
+start_year <- as.numeric(format(min(daily_sales$Order.Date.NoTime), "%Y"))
+start_month <- as.numeric(format(min(daily_sales$Order.Date.NoTime), "%m"))
+start_day <- as.numeric(format(min(daily_sales$Order.Date.NoTime), "%d"))
+
+# Convert dataframe to time-series
+ts_data <- ts(weekly_sales$Total.Sales, start = c(start_year, week(min(weekly_sales$Week))), frequency = 52)
+
+# Define the proportion for training
+train_prop <- 0.8
+
+# Calculate the index that splits the data
+split_index <- round(length(ts_data) * train_prop)
+
+# Create the training and test sets
+train <- window(ts_data, end=c(start_year + floor(split_index/52), split_index %% 52))
+test <- window(ts_data, start=c(start_year + floor(split_index/52), split_index %% 52))
+
+# Apply linear trend model
+lt_model <- tslm(train ~ trend)
+
+# Predict using linear trend model
+lt_forecast <- forecast(lt_model, h=length(test))
+# Apply SES model
+ses_model <- HoltWinters(train, beta=FALSE, gamma=FALSE)
+
+# Predict using SES model
+ses_forecast <- forecast(ses_model, h=length(test))
+# Check accuracy of Linear Trend Model
+accuracy(lt_forecast, test)
+
+# Check accuracy of SES Model
+accuracy(ses_forecast, test)
+
+# Plot the actual and forecasted values for Linear Trend Model
+autoplot(lt_forecast) + autolayer(test, series="Test", PI=FALSE)
+
+# Plot the actual and forecasted values for SES Model
+autoplot(ses_forecast) + autolayer(test, series="Test", PI=FALSE)
+
+
+```
+

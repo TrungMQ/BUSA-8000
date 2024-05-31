@@ -1,0 +1,181 @@
+```{r}
+#install and load packages
+packages <- c("readr", "dplyr", "ggplot2", "lubridate", "caret", "tidyr", "tsibble", "forecast")
+
+
+install_if_missing <- function(p) {
+  if (!require(p, character.only = TRUE)) {
+    install.packages(p, dependencies = TRUE)
+  }
+  library(p, character.only = TRUE)
+}
+
+lapply(packages, install_if_missing)
+```
+
+
+```{r}
+
+#plot daily and weekly sale
+data <- read_csv('sales_clean.csv')
+###############
+# Load the dataset
+ 
+# Ensure column names are valid by removing spaces
+names(data) <- make.names(names(data))
+# 
+
+# Convert 'Order.Date' to Date format
+data$Order.Date <- ymd_hms(data$Order.Date)
+# 
+# Aggregate daily sales
+daily_sales <- data %>%
+  group_by(Date = as.Date(Order.Date)) %>%
+  summarize(DailyTotalSales = sum(Total.Purchase.Amount))
+# 
+# Aggregate weekly sales
+weekly_sales <- data %>%
+  group_by(Week = floor_date(Order.Date, "week")) %>%
+  summarize(WeeklyTotalSales = sum(Total.Purchase.Amount))
+# 
+# Plot daily sales
+daily_sales_plot <- ggplot(daily_sales, aes(x = Date, y = DailyTotalSales)) +
+  geom_line(color = "darkblue") +
+  ggtitle("Daily Sales Over Time") +
+  xlab("Date") +
+  ylab("Total Sales") +
+  theme_minimal()
+# 
+# Plot weekly sales
+weekly_sales_plot <- ggplot(weekly_sales, aes(x = Week, y = WeeklyTotalSales)) +
+  geom_line(color = "coral4") +
+  ggtitle("Weekly Sales Over Time") +
+  xlab("Week") +
+  ylab("Total Sales") +
+  theme_minimal()
+# 
+# Print the plots
+print(daily_sales_plot)
+print(weekly_sales_plot)
+
+```
+
+
+```{r}
+#for consistency when merging, i load the data again
+data <- read_csv('sales_clean.csv')
+
+# Convert 'Order.Date' to Date format
+names(data) <- make.names(names(data))
+data$Order.Date <- as.POSIXct(data$Order.Date, format="%Y-%m-%d %H:%M:%S")
+
+# Remove rows where Order.Date year is NA or 2020
+data <- data[!is.na(year(data$Order.Date)) & year(data$Order.Date) != 2020, ]
+data$Total.Sales <- data$Quantity.Ordered * data$Price.Each
+
+# Add a new column with just the date part of Order.Date
+data <- data %>% mutate(Order.Date.NoTime = as.Date(Order.Date))
+
+# Group by the new column to get daily sales
+daily_sales <- data %>%
+  group_by(Order.Date.NoTime) %>%
+  summarise(Total.Sales = sum(Total.Sales))
+
+# Remove rows with NA values if any
+daily_sales <- na.omit(daily_sales)
+
+# Create weekly sales
+weekly_sales <- daily_sales %>%
+  mutate(Week = floor_date(Order.Date.NoTime, "week")) %>%
+  group_by(Week) %>%
+  summarise(Total.Sales = sum(Total.Sales))
+
+# Remove rows with NA values if any
+weekly_sales <- na.omit(weekly_sales)
+
+# Define start date components for time series conversion
+start_year <- year(min(weekly_sales$Week))
+start_week <- week(min(weekly_sales$Week))
+
+# Convert dataframe to time-series
+ts_data <- ts(weekly_sales$Total.Sales, start = c(start_year, start_week), frequency = 52)
+
+# Define the proportion for training
+train_prop <- 0.8
+
+# Calculate the index that splits the data
+split_index <- round(length(ts_data) * train_prop)
+
+# Create the training and test sets
+train <- window(ts_data, end = c(start_year + floor(split_index / 52), split_index %% 52))
+test <- window(ts_data, start = c(start_year + floor(split_index / 52), (split_index %% 52) + 1))
+
+# Determine the forecast horizon
+forecast_horizon <- length(test)
+
+# Apply linear trend model
+lt_model <- tslm(train ~ trend)
+
+# Predict using linear trend model
+lt_forecast <- forecast(lt_model, h = forecast_horizon)
+
+# Apply SES model with sufficient horizon
+holt_model <- HoltWinters(train, beta=FALSE, gamma=FALSE)
+
+# Predict using SES model
+holt_forecast <- forecast(holt_model, h = forecast_horizon)
+
+# Check accuracy of Linear Trend Model
+lt_accuracy <- accuracy(lt_forecast, test)
+print(lt_accuracy)
+
+# Check accuracy of Holt Model
+holt_accuracy <- accuracy(holt_forecast, test)
+print(holt_accuracy)
+
+# Plot the actual and forecasted values for Linear Trend Model
+p1 <- autoplot(lt_forecast) + 
+  autolayer(test, series = "Test", PI = FALSE) +
+  ggtitle("Linear Trend Model Forecast") +
+  xlab("Time") + ylab("Sales") +
+  theme_minimal()
+
+# Plot the actual and forecasted values for SES Model
+p2 <- autoplot(holt_forecast) + 
+  autolayer(test, series = "Test", PI = FALSE) +
+  ggtitle("Holt Model Forecast") +
+  xlab("Time") + ylab("Sales") +
+  theme_minimal()
+
+# Print the plots
+print(p1)
+print(p2)
+
+# Compare models based on accuracy metrics
+comparison <- data.frame(
+  Model = c("Linear Trend", "Holtwinters"),
+  ME = c(lt_accuracy[1, "ME"], holt_accuracy[1, "ME"]),
+  RMSE = c(lt_accuracy[1, "RMSE"], holt_accuracy[1, "RMSE"]),
+  MAE = c(lt_accuracy[1, "MAE"], holt_accuracy[1, "MAE"]),
+  MPE = c(lt_accuracy[1, "MPE"], holt_accuracy[1, "MPE"]),
+  MAPE = c(lt_accuracy[1, "MAPE"], holt_accuracy[1, "MAPE"]),
+  ACF1 = c(lt_accuracy[1, "ACF1"], holt_accuracy[1, "ACF1"])
+  
+)
+
+print(comparison)
+
+```
+
+
+```{r}
+#Studying abt marketing and customer behaivier
+#no custommer data set 
+
+
+
+
+
+
+```
+
